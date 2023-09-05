@@ -1,0 +1,156 @@
+#!/bin/bash
+### BEGIN INIT INFO
+# Provides:          gdfs
+# Required-Start:    $local_fs $network $remote_fs
+# Required-Stop:     $local_fs $network $remote_fs
+# Default-Start:     3 5
+# Default-Stop:      0 1 6
+# X-Interactive:     false
+# Short-Description: Start GDFS daemon at boot time
+# Description:       Enable service provided by GDFS daemon
+### END INIT INFO
+
+NAME=gdfs
+DESC="Google Drive File System"
+LOG_FILE="/var/log/${NAME}.log"
+CONF_FILE="/opt/gdfs/${NAME}.conf"
+
+DAEMON=`which mount.${NAME}`
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+FUSECTL_MNT_PT=/sys/fs/fuse/connections
+
+RETVAL=0
+
+# for killproc function.
+if [ -f /lib/lsb/init-functions ]; then
+  . /lib/lsb/init-functions
+elif [ -f /etc/init.d/functions ]; then
+  . /etc/init.d/functions
+fi
+
+# Exit the shell if any subcommand/pipeline returns non-zero status.
+set -e
+
+# Gracefully exit if gdfs is mising.
+[ -n $DAEMON ] || exit 1
+
+# Check if the GDFS conf file exists.
+if [ ! -f $CONF_FILE ]; then
+  echo "`date` GDFS conf file $CONF_FILE does not exist." >> $LOG_FILE
+  exit 2
+fi
+
+# Get the GDFS mount path.
+GDFS_MOUNT_PATH=`awk -F"=" '{ if ("gdfs.mount.point" == $1) print $2; }' $CONF_FILE`
+if [ -z "$GDFS_MOUNT_PATH" ]; then
+  echo "`date` GDFS mount point not specified in $CONF_FILE." >> $LOG_FILE
+  exit 3
+fi
+
+
+# Start the GDFS service.
+do_start() {
+
+  echo "Starting GDFS service: "
+
+  # Check whether GDFS is already running.
+  do_status
+  if [ "$RETVAL" == "1" ]; then
+    echo "`date` Trying to mount, but GDFS is already mounted." >> $LOG_FILE
+    exit 0
+  fi
+
+  # Load FUSE kernel module.
+  if ! grep -qw fuse /proc/filesystems; then
+    if ! modprobe fuse >/dev/null 2>&1; then
+      echo " Loading fuse module failed!" >> $LOG_FILE
+      exit 5
+    fi
+  fi
+
+  # Parse the GDFS mount options.
+  DAEMON_OPTS=`awk -F"=" '{
+                            if ("gdfs.log.path" == $1) print "--log_path "$2" ";
+                            else if ("gdfs.log.level" == $1) print "--log_level "$2" ";
+                            else if ("gdfs.allow.others" == $1 && "yes" == $2) print "-o allow_other ";
+                            else if ("gdfs.allow.root" == $1 && "yes" == $2) print "-o allow_root ";
+                            else if ("gdfs.direct.io" == $1 && "yes" == $2) print "-o direct_io ";
+                            else if ("gdfs.max.read" == $1) print "-o max_read="$2" ";
+                            else if ("gdfs.max.readahead" == $1) print "-o max_readahead="$2" ";
+                            else if ("gdfs.max.write" == $1) print "-o max_write="$2" ";
+                            else if ("gdfs.sync.read" == $1 && "yes" == $2) print "-o sync_read ";
+                            else if ("gdfs.hard.remove" == $1 && "yes" == $2) print "-o hard_remove ";
+                            else if ("gdfs.auto.cache" == $1 && "yes" == $2) print "-o auto_cache ";
+                            else if ("gdfs.kernel.cache" == $1 && "yes" == $2) print "-o kernel_cache ";
+                            else if ("gdfs.entry.timeout" == $1) print "-o entry_timeout="$2" ";
+                            else if ("gdfs.attr.timeout" == $1) print "-o attr_timeout="$2" ";
+                          }' $CONF_FILE`
+  DAEMON_OPTS="${DAEMON_OPTS//$'\n'/}"
+
+  # Get the GDFS user.
+  GDFS_USER=`awk -F"=" '{ if ("gdfs.mount.user" == $1) print $2; }' $CONF_FILE`
+
+  # Mount GDFS file system.
+  if [ -z "$GDFS_USER" ]; then
+    $DAEMON -m $GDFS_MOUNT_PATH -f -s $DAEMON_OPTS &
+  else
+    /bin/su - "$GDFS_USER" -c "$DAEMON -m $GDFS_MOUNT_PATH -f -s $DAEMON_OPTS" &
+  fi
+  RETVAL=$?
+}
+
+
+# Stop the GDFS service.
+do_stop() {
+
+  echo "Stopping GDFS service: "
+
+  # Check whether GDFS is actually running.
+  do_status
+  if [ "$RETVAL" == "0" ]; then
+    echo "`date` Trying to unmount, but GDFS filesystem is not mounted." >> $LOG_FILE
+    exit 0
+  fi
+
+  # Unmount the GDFS filesystem
+  killproc $DAEMON -TERM
+  RETVAL=$?
+}
+
+
+# Status of the GDFS service.
+do_status() {
+  if ! grep -qw $GDFS_MOUNT_PATH /proc/mounts; then
+    RETVAL=0;
+  else
+    RETVAL=8;
+  fi
+}
+
+case "$1" in
+  start)
+        do_start
+        ;;
+  stop)
+        do_stop
+        ;;
+  restart|reload|force-reload)
+        do_stop
+        do_start
+        ;;
+  status)
+        do_status
+        if [ "$RETVAL" == "0" ]; then
+          echo "GDFS filesystem is not mounted."
+        else
+          echo "GDFS filesystem already mounted at ${GDFS_MOUNT_PATH}."
+        fi
+        exit 0
+        ;;
+  *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac
+exit $RETVAL

@@ -1,0 +1,14 @@
+[Unit]
+Description=gdfs
+After=local-fs.target network.target network-online.target
+Wants=local-fs.target network-online.target
+
+[Service]
+Type=forking
+ExecStart=/bin/sh /opt/gdfs/gdfs.sh start
+ExecStop=/bin/sh /opt/gdfs/gdfs.sh stop
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
